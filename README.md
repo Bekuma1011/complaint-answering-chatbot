@@ -60,3 +60,4 @@ pip install -r requirements.txt
 ---
 ## start app
 streamlit run app.py
+---
