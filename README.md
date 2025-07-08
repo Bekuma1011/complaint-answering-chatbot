@@ -13,7 +13,7 @@ Convert long complaint narratives into manageable chunks, generate vector embedd
 - **Text Chunking**: Implemented using `LangChain`’s `RecursiveCharacterTextSplitter` to break documents into semantically meaningful chunks.
   - Tuned `chunk_size` and `chunk_overlap` for balance.
 - **Embedding**: Used a transformer-based embedding model (e.g., `all-MiniLM-L6-v2`).
-- **Vector Store**: Stored vectors using `ChromaDB` or `FAISS` for efficient semantic search.
+- **Vector Store**: Stored vectors using `ChromaDB`for efficient semantic search.
 
 ---
 
@@ -38,7 +38,7 @@ Set up a RAG pipeline combining vector-based retrieval with a large language mod
 Build an easy-to-use frontend that allows non-technical users to interact with the chatbot.
 
 ###  Framework Used
-- **Option 2**: [Streamlit](https://streamlit.io/)
+- **Framework**: [Streamlit](https://streamlit.io/)
 
 ### Core Features
 - **Text Input**: Box for user to type questions.
