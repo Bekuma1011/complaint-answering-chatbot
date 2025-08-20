@@ -1,29 +1,82 @@
-from sentence_transformers import SentenceTransformer
-import chromadb
-import numpy as np
-from transformers import pipeline
-from huggingface_hub import login
+from typing import List, Dict, Tuple, Optional
+import logging
+from models import EmbeddingModel, LLMModel, VectorStore
+
+# Configure logging
+logging.basicConfig(level=logging.INFO)
+logger = logging.getLogger(__name__)
 
 
-
-
-# === Load embedding model and vector store ===
-model = SentenceTransformer("all-MiniLM-L6-v2")
-client = chromadb.PersistentClient(path="../data/vector_store")
-collection = client.get_or_create_collection(name="complaints")
-
-# === Retriever Function ===
-def retrieve_chunks(query, k=3):
-    query_embedding = model.encode(query).tolist()
-    results = collection.query(
-        query_embeddings=[query_embedding],
-        n_results=k
-    )
-    return results["documents"][0], results["metadatas"][0]
-
-def build_prompt(context_chunks, question):
-    context = "\n\n".join(context_chunks)
-    prompt = f"""
+class RAGPipeline:
+    """Main RAG pipeline class that orchestrates the entire process."""
+    
+    def __init__(self, 
+                 embedding_model_name: str = "all-MiniLM-L6-v2",
+                 llm_model_name: str = "google/flan-t5-base",
+                 vector_store_path: str = "../data/vector_store",
+                 collection_name: str = "complaints"):
+        
+        # Initialize components
+        self.embedding_model = EmbeddingModel(embedding_model_name)
+        self.llm_model = LLMModel(llm_model_name)
+        self.vector_store = VectorStore(vector_store_path, collection_name)
+        
+        # State tracking
+        self.is_initialized = False
+        self.logger = logger
+    
+    def initialize(self):
+        """Initialize all components of the RAG pipeline."""
+        try:
+            self.logger.info("Initializing RAG pipeline...")
+            
+            # Load models
+            self.embedding_model.load()
+            self.llm_model.load()
+            
+            # Connect to vector store
+            self.vector_store.connect()
+            
+            self.is_initialized = True
+            self.logger.info("RAG pipeline initialized successfully")
+            
+        except Exception as e:
+            self.logger.error(f"Failed to initialize RAG pipeline: {e}")
+            raise
+    
+    def is_ready(self) -> bool:
+        """Check if the pipeline is ready for use."""
+        return (
+            self.is_initialized
+            and self.embedding_model.is_loaded()
+            and self.llm_model.is_loaded()
+            and self.vector_store.is_connected
+        )
+    
+    def retrieve_chunks(self, query: str, k: int = 3) -> Tuple[List[str], List[Dict]]:
+        """Retrieve relevant chunks from the vector store."""
+        if not self.is_ready():
+            raise RuntimeError("RAG pipeline not ready. Call initialize() first.")
+        
+        try:
+            # Encode query
+            query_embedding = self.embedding_model.encode(query)
+            
+            # Retrieve chunks
+            chunks, metadatas = self.vector_store.query(query_embedding, k)
+            
+            self.logger.info(f"Retrieved {len(chunks)} chunks for query")
+            return chunks, metadatas
+            
+        except Exception as e:
+            self.logger.error(f"Retrieval failed: {e}")
+            raise
+    
+    def build_prompt(self, context_chunks: List[str], question: str) -> str:
+        """Build a prompt for the LLM using retrieved context."""
+        context = "\n\n".join(context_chunks)
+        
+        prompt = f"""
 You are a financial analyst assistant for CrediTrust. Your task is to answer questions about customer complaints.
 
 Use the following retrieved complaint excerpts to formulate your answer. If the context doesn't contain the answer, state that you don't have enough information.
@@ -35,50 +88,76 @@ Question:
 {question}
 
 Answer:"""
-    return prompt
-
-
-# Use a lightweight LLM (e.g., distilgpt2, mistral, llama2) or local model
-#qa_pipeline = pipeline("text-generation", model="mistralai/Mistral-7B-Instruct-v0.1")
-#qa_pipeline = pipeline("text2text-generation", model="google/flan-t5-small")
-qa_pipeline = pipeline("text2text-generation", model="google/flan-t5-base")
-
-
-
-
-
-def generate_answer(prompt):
-    response = qa_pipeline(prompt, max_new_tokens=100, do_sample=False)
-    return response[0]["generated_text"].strip()
-
-
-def rag_pipeline(question, k=5):
-    try:
-        chunks, metadatas = retrieve_chunks(question, k)
-        prompt = build_prompt(chunks, question)
-        answer = generate_answer(prompt)
-        return answer, chunks[:2]
-    except Exception as e:
-        print("Error inside rag_pipeline:", e)
-        return None, []
-print("Script started")
-questions = [
-    "What common issues are reported with credit cards?",
-    "Why are customers unhappy with Buy Now, Pay Later?",
-    "What common issues are reported with credit cards?",
-    "Are there any frequent complaints about money transfers?",
-    "What are customers saying about savings accounts?",
-    "Why do people file complaints about personal loans?"
-]
-
-for q in questions:
-    print(f"\n📌 Question: {q}")
-    answer, sources = rag_pipeline(q)
-    print(f"\n🧠 Answer:\n{answer}")
-    #print("Source 1:", sources[1][:200])
-    print(f"\n📄 source 1 (Preview):\n- {sources[0][:200]}...\n- {sources[1][:200]}...\n")
+        
+        return prompt
     
-print("Script ended")
+    def generate_answer(self, prompt: str, max_new_tokens: int = 100) -> str:
+        """Generate answer using the LLM."""
+        if not self.is_ready():
+            raise RuntimeError("RAG pipeline not ready. Call initialize() first.")
+        
+        try:
+            answer = self.llm_model.generate(prompt, max_new_tokens, do_sample=False)
+            self.logger.info("Answer generated successfully")
+            return answer
+            
+        except Exception as e:
+            self.logger.error(f"Answer generation failed: {e}")
+            raise
+    
+    def process_query(self, question: str, k: int = 5) -> Tuple[str, List[str]]:
+        """Process a complete query through the RAG pipeline."""
+        if not self.is_ready():
+            raise RuntimeError("RAG pipeline not ready. Call initialize() first.")
+        
+        try:
+            self.logger.info(f"Processing query: {question}")
+            
+            # Retrieve relevant chunks
+            chunks, metadatas = self.retrieve_chunks(question, k)
+            
+            # Build prompt
+            prompt = self.build_prompt(chunks, question)
+            
+            # Generate answer
+            answer = self.generate_answer(prompt)
+            
+            self.logger.info("Query processed successfully")
+            return answer, chunks[:2]  # Return first 2 chunks as sources
+            
+        except Exception as e:
+            self.logger.error(f"Query processing failed: {e}")
+            raise
+    
+    def get_pipeline_status(self) -> Dict[str, bool]:
+        """Get the status of all pipeline components."""
+        return {
+            "pipeline_initialized": self.is_initialized,
+            "embedding_model_loaded": self.embedding_model.is_loaded(),
+            "llm_model_loaded": self.llm_model.is_loaded(),
+            "vector_store_connected": self.vector_store.is_connected,
+            "pipeline_ready": self.is_ready()
+        }
+    
+    def cleanup(self):
+        """Clean up resources."""
+        try:
+            if self.vector_store.is_connected:
+                self.vector_store.persist()
+            self.logger.info("RAG pipeline cleanup completed")
+        except Exception as e:
+            self.logger.error(f"Cleanup failed: {e}")
+
+
+# Factory function for easy pipeline creation
+def create_rag_pipeline(embedding_model_name: str = "all-MiniLM-L6-v2",
+                       llm_model_name: str = "google/flan-t5-base",
+                       vector_store_path: str = "../data/vector_store",
+                       collection_name: str = "complaints") -> RAGPipeline:
+    """Create and initialize a RAG pipeline."""
+    pipeline = RAGPipeline(embedding_model_name, llm_model_name, vector_store_path, collection_name)
+    pipeline.initialize()
+    return pipeline
 
 
 
